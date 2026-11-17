@@ -1,0 +1,68 @@
+name: Build Custom RikkaHub arm64 APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-arm64-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: 1. 检出项目源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 2. 自动合并酒馆兼容模块与二改补丁
+        run: |
+          python3 - << 'PYEOF'
+          import re, subprocess, pathlib
+          subprocess.run(["git", "remote", "add", "huadeng_repo", "https://github.com/MiaoWuNYA/rikkahub-sillytavern-android.git"], check=False)
+          subprocess.run(["git", "fetch", "huadeng_repo", "huadeng", "--depth=1"], check=False)
+          for p in [
+              "app/src/main/java/me/rerere/rikkahub/data/model/TavernCard.kt",
+              "app/src/main/java/me/rerere/rikkahub/utils/CardExporter.kt",
+              "app/src/main/java/me/rerere/rikkahub/data/ai/transformers/MacroEngine.kt",
+              "app/src/main/java/me/rerere/rikkahub/data/ai/transformers/AuthorsNoteTransformer.kt",
+              "app/src/main/java/me/rerere/rikkahub/ui/pages/chat/TavernPreset.kt",
+              "app/src/main/java/me/rerere/rikkahub/ui/pages/chat/TavernRegex.kt",
+          ]:
+              subprocess.run(["git", "checkout", "huadeng_repo/huadeng", "--", p], check=False)
+
+          resp_api = pathlib.Path("ai/src/main/java/me/rerere/ai/provider/providers/openai/ResponseAPI.kt")
+          if resp_api.exists():
+              txt = resp_api.read_text(encoding="utf-8")
+              txt = re.sub(
+                  r'if\s*\(capabilities\.supportsSamplingParams\)\s*\{\s*if\s*\(params\.maxTokens\s*!=\s*null\)\s*put\("max_output_tokens",\s*params\.maxTokens\)',
+                  'if (params.maxTokens != null) put("max_output_tokens", params.maxTokens)\n                if (capabilities.supportsSamplingParams) {',
+                  txt
+              )
+              resp_api.write_text(txt, encoding="utf-8")
+
+          ds_kt = pathlib.Path("app/src/main/java/me/rerere/rikkahub/di/DataSourceModule.kt")
+          if ds_kt.exists():
+              txt = ds_kt.read_text(encoding="utf-8")
+              txt = txt.replace("readTimeout(10, TimeUnit.MINUTES)", "readTimeout(30, TimeUnit.MINUTES)")
+              ds_kt.write_text(txt, encoding="utf-8")
+          PYEOF
+
+      - name: 3. 配置 Java 17 环境
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: 4. 编译手机 arm64-v8a 安装包
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug -Pandroid.injected.build.abi=arm64-v8a --no-daemon
+
+      - name: 5. 上传 APK 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: RikkaHub-Workbench-arm64-v8a
+          path: app/build/outputs/apk/debug/*.apk
